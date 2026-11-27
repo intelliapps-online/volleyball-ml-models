@@ -5,10 +5,12 @@ This module provides functionality to download model weights from Google Drive
 using a single ZIP file containing all models.
 """
 
+import hashlib
 import os
+import tempfile
 import zipfile
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import BinaryIO, Dict, Optional, Union
 from urllib.parse import urlparse, parse_qs
 
 try:
@@ -21,6 +23,12 @@ from .logger import logger
 
 # Google Drive file ID for the complete weights ZIP file
 WEIGHTS_ZIP_DRIVE_ID = "1__zkTmGwZo2z0EgbJvC14I_3kOpgQx3o"
+
+# Hex SHA-256 of the reviewed weights ZIP. Anyone with edit access to the Drive
+# file can replace its contents, so the archive is only extracted when its bytes
+# match this value. Update it in a reviewed commit whenever the archive changes;
+# while it is unset, automatic download is refused.
+WEIGHTS_ZIP_SHA256: Optional[str] = None
 
 # Expected file paths for each model
 MODEL_PATHS = {
@@ -66,13 +74,14 @@ def extract_drive_id(url: str) -> Optional[str]:
     return None
 
 
-def download_from_google_drive(file_id: str, output_path: Union[str, Path], quiet: bool = False) -> bool:
+def download_from_google_drive(file_id: str, output_path: Union[str, Path, BinaryIO], quiet: bool = False) -> bool:
     """
     Download a file from Google Drive using its file ID.
     
     Args:
         file_id: Google Drive file ID
-        output_path: Local path where the file should be saved
+        output_path: Local path where the file should be saved, or a binary
+            file object opened for writing that receives the bytes
         quiet: Whether to suppress download progress output
         
     Returns:
@@ -83,7 +92,16 @@ def download_from_google_drive(file_id: str, output_path: Union[str, Path], quie
             "gdown is required for downloading from Google Drive. "
             "Install it with: pip install gdown"
         )
-    
+
+    if hasattr(output_path, "write"):
+        try:
+            logger.info(f"Downloading from Google Drive (ID: {file_id})")
+            gdown.download(id=file_id, output=output_path, quiet=quiet)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to download from Google Drive: {e}")
+            return False
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -103,6 +121,15 @@ def download_from_google_drive(file_id: str, output_path: Union[str, Path], quie
     except Exception as e:
         logger.error(f"Failed to download from Google Drive: {e}")
         return False
+
+
+def _sha256_of_stream(stream: BinaryIO) -> str:
+    stream.seek(0)
+    digest = hashlib.sha256()
+    for block in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(block)
+    stream.seek(0)
+    return digest.hexdigest()
 
 
 def download_all_models(weights_dir: Optional[Union[str, Path]] = None, force_download: bool = False,
@@ -130,32 +157,44 @@ def download_all_models(weights_dir: Optional[Union[str, Path]] = None, force_do
             logger.info("All model weights already exist")
             return True
     
-    # Create weights directory
-    weights_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Download ZIP file
-    zip_path = weights_dir / "all_weights.zip"
-    
-    try:
-        logger.info("Downloading complete weights ZIP file from Google Drive...")
-        success = download_from_google_drive(
-            file_id=WEIGHTS_ZIP_DRIVE_ID,
-            output_path=zip_path,
-            quiet=quiet
+    expected_sha256 = WEIGHTS_ZIP_SHA256
+    if not expected_sha256:
+        logger.error(
+            "Refusing to download weights: WEIGHTS_ZIP_SHA256 is not set in "
+            "utils/downloader.py, so the archive cannot be verified"
         )
-        
-        if not success:
-            logger.error("Failed to download weights ZIP file")
-            return False
-        
-        # Extract ZIP file
-        logger.info(f"Extracting weights to {weights_dir}")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(weights_dir)
-        
-        # Remove ZIP file after extraction
-        zip_path.unlink()
-        logger.info("ZIP file extracted and removed")
+        return False
+    expected_sha256 = expected_sha256.strip().lower()
+
+    try:
+        # Hashed and extracted through this one unnamed handle, so there is no
+        # path that could be swapped between the digest check and extraction.
+        with tempfile.TemporaryFile() as archive:
+            logger.info("Downloading complete weights ZIP file from Google Drive...")
+            success = download_from_google_drive(
+                file_id=WEIGHTS_ZIP_DRIVE_ID,
+                output_path=archive,
+                quiet=quiet
+            )
+
+            if not success:
+                logger.error("Failed to download weights ZIP file")
+                return False
+
+            actual_sha256 = _sha256_of_stream(archive)
+            if actual_sha256 != expected_sha256:
+                logger.error(
+                    "Refusing to extract weights ZIP: SHA-256 "
+                    f"{actual_sha256} does not match the pinned {expected_sha256}"
+                )
+                return False
+
+            weights_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Extracting weights to {weights_dir}")
+            with zipfile.ZipFile(archive, 'r') as zip_ref:
+                zip_ref.extractall(weights_dir)
+
+        logger.info("ZIP file verified and extracted")
         
         # Verify extraction
         extracted_models = check_model_weights(weights_dir)
@@ -172,9 +211,6 @@ def download_all_models(weights_dir: Optional[Union[str, Path]] = None, force_do
             
     except Exception as e:
         logger.error(f"Failed to download/extract weights ZIP: {e}")
-        # Clean up partial download
-        if zip_path.exists():
-            zip_path.unlink()
         return False
 
 

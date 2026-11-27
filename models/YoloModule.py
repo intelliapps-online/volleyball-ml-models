@@ -8,6 +8,7 @@ the same API for detection, plotting, and result filtering.
 import cv2
 import numpy as np
 from ultralytics import YOLO
+from ultralytics.nn import tasks as yolo_tasks
 from typing import List, Optional, Union, Tuple, Dict
 from supervision import BoxAnnotator, MaskAnnotator, VertexAnnotator
 from supervision.detection.core import Detections as SupervisionDetections
@@ -18,6 +19,22 @@ from ..core.data_structures import (
     BoundingBox, KeyPoint
 )
 from ..enums import YOLOModelType
+
+
+def _require_restricted_checkpoint_loading() -> None:
+    """Force Ultralytics' restricted ``torch.load(weights_only=True)`` checkpoint loading.
+
+    A full unpickle runs any callable a checkpoint names. Ultralytics silently
+    falls back to one when restricted loading is unsupported, so refuse instead.
+    The flag is process-wide and never reset, so a concurrent load cannot see it off.
+    """
+    safe_load = getattr(yolo_tasks, "_SafeLoad", None)
+    if safe_load is None or not getattr(safe_load, "SUPPORTED", False) or not hasattr(yolo_tasks, "SAFE_LOAD"):
+        raise RuntimeError(
+            "Restricted YOLO checkpoint loading is unavailable; "
+            "install ultralytics>=8.4.67 and torch>=2.6"
+        )
+    yolo_tasks.SAFE_LOAD = True
 
 
 class YOLOModule:
@@ -40,6 +57,7 @@ class YOLOModule:
 
         # Load YOLO model
         logger.info(f"Loading YOLO model from: {model_path}")
+        _require_restricted_checkpoint_loading()
         self.model = YOLO(model_path)
 
         # Automatically determine model_type from YOLO model attributes
