@@ -33,10 +33,10 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = [
-    "torch>=1.9.0",
+    "torch>=2.6.0",
     "torchvision>=0.10.0",
-    "ultralytics>=8.0.0",
-    "transformers>=4.20.0",
+    "ultralytics>=8.4.67",
+    "transformers>=4.56.0",
     "pytorchvideo>=0.1.5",
     "numpy>=1.21.0",
     "opencv-python>=4.5.0",
