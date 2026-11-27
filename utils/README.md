@@ -22,7 +22,11 @@ The ZIP file contains:
 ## Functions
 
 ### `download_all_models(weights_dir=None, force_download=False, quiet=False)`
-Downloads and extracts all model weights from a single ZIP file.
+Downloads and extracts all model weights from a single ZIP file. The archive is
+only extracted when its SHA-256 matches `WEIGHTS_ZIP_SHA256` in
+`utils/downloader.py`; while that value is unset, or when the downloaded bytes
+do not match it, nothing is extracted and the function returns `False`. When
+the published archive changes, update `WEIGHTS_ZIP_SHA256` in a reviewed commit.
 
 ### `check_model_weights(weights_dir=None)`
 Returns dictionary showing which models are available locally.
